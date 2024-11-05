@@ -1,0 +1,320 @@
+<script setup>
+import { ref, computed } from 'vue'
+import { useUser } from '@/store/user.js'
+import { useCalendar } from '@/store/calendar.js'
+import {parseTime} from '@/utils/index.js'
+import {useOdata} from '@/store/odata.js'
+import * as XLSX from 'xlsx'
+import {useI18n} from 'vue-i18n'
+
+const { t, d } = useI18n()
+const user = useUser()
+const calendar = useCalendar()
+const odata = useOdata()
+const employees = ref([
+  // { name: 'Иванов П.М. (Ведущий работник месяца)',
+  //   days: [], // {day: "2024-11-01", tips: '(9:00 - 18:00)', time: 8 }
+  //   contHour: 0,
+  //   code: '0000-00052'
+  // },
+  // { name: 'Петров И.С. (Ведущий работник месяца)',
+  //   days: [], // {day: "2024-11-01", tips: '(9:00 - 18:00)', time: 8 }
+  //   contHour: 0,
+  //   code: '0000-00052'
+  // }
+])
+const month = ref([])
+const nextMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1).setMonth(new Date().getMonth()+1)
+
+const fortyHours = ref(0)
+const tips = ref(9)
+const time = ref(8)
+const confirm = ref(false)
+const loading = ref(true)
+const typeWork = ref('5')
+const date = ref(1)
+const group = ref("Сектор разработок и эксплуатации сети")
+const excelLoading = ref(false)
+
+const checkedDays = computed(() => !employees.value.some(el => el.contHour !== fortyHours.value))
+
+const holiday = async () => {
+  const resolve = await calendar.getHoliday()
+  const date = new Date(nextMonth)
+  const daysInMonth = new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate()
+  let localMonthData = []
+  let tempFortyHours = 0
+
+  for (let i = 1; i <= daysInMonth; i++) {
+    const formattedDay = `${date.getFullYear()}-${date.getMonth() + 1}-${i < 10 ? i.toString().padStart(2, '0') : i}`
+    tempFortyHours += resolve.nowork.includes(formattedDay)
+        ? 0
+        : resolve.holidays.includes(formattedDay)
+            ? 0
+            : resolve.preholidays.includes(formattedDay)
+                ? 7
+                : 8
+    const holidayType = resolve.nowork.includes(formattedDay)
+        ? 'nowork'
+        : resolve.holidays.includes(formattedDay)
+            ? 'holiday'
+            : resolve.preholidays.includes(formattedDay)
+                ? 'preholiday'
+                : ''
+    localMonthData.push({ day: i, holidays: holidayType })
+  }
+
+  fortyHours.value = tempFortyHours
+  month.value = localMonthData
+
+  // список сотрудников
+  odata.getPersonalManagerData({}).then(result => {
+
+    result.forEach(el => {
+      if (el.Status!== 'Увольнение' && el.Description === user.fullname) {
+        group.value = el.Group
+      }
+    })
+    result.forEach( el => {
+      if (el.Status !== 'Увольнение' && el.Group === group.value) {
+        let name = el.Description.split(' ', 3).map((i, k) => {
+          if (k !== 0) return i.slice(0, 1) +'.'
+          else return i
+        }).join(' ')
+        employees.value.push({ name: name + " (" + el.Role + ")", days: [], contHour: 0, code: el.Code })
+      }
+    })
+    contDay()
+    loading.value = false
+  })
+}
+
+const work = (day, id) => {
+  const date = new Date(nextMonth)
+  const formattedDay = `${date.getFullYear()}-${date.getMonth() + 1}-${day < 10 ? day.toString().padStart(2, '0') : day}`
+  const ind = employees.value[id]?.days.findIndex(el => el.day === formattedDay)
+  return id === -1 ? '' : ind === -1 ? '' : employees.value[id].days[ind]?.time + ' ' + employees.value[id].days[ind]?.tips
+}
+
+const contDay = () => {
+  employees.value.forEach(d => {
+    d.contHour = d.days.reduce((summ, el) => summ + el.time, 0)
+  })
+}
+
+const autofill = (id) =>  {
+  switch (typeWork.value) {
+    case '5':
+      for( let i = date.value; i <= month.value.length; i++ ) {
+        if ( month.value[i - 1].holidays === '') test(i, id, true)
+        if ( month.value[i - 1].holidays === 'preholiday') {
+          time.value -= 1
+          test(i, id, true)
+          time.value += 1
+        }
+
+      }
+      break
+    case '2x2':
+      for( let i = date.value; i <= month.value.length; i += 4 ) {
+        test(i, id, true)
+        if(i+1 <= month.value.length) test(i+1, id, true)
+      }
+      break
+    case '2x5':
+      for( let i = date.value; i <= month.value.length; i += 7) {
+        for(let m = i; m < i +5 && m <= month.value.length; m++) {
+          if ( month.value[m - 1].holidays === 'preholiday') {
+            time.value -= 1
+            test(m, id, true)
+            time.value += 1
+          } else test(m, id, true)
+        }
+      }
+      break
+    default:
+      break
+  }
+}
+
+const test = (day, id, auto = false) => {
+  const { date, ind } = getId(day, id)
+  if (ind === -1) {
+    employees.value[id].days.push({
+      day: date,
+      time: time.value,
+      tips: `(${tips.value}:00 - ${tips.value + time.value + 1}:00)`
+    })
+    contDay()
+  } else if(!auto) {
+    time.value = employees.value[id].days[ind].time
+    tips.value = parseInt(employees.value[id].days[ind].tips.slice(1, -12))
+  }
+}
+
+const deleteEmployees = (day, id) => {
+  const { ind } = getId(day, id)
+  employees.value[id].days.splice(ind, 1)
+  contDay()
+}
+
+const changeParam = (day, id) => {
+  const { date, ind } = getId(day, id)
+  employees.value[id].days[ind] = {
+    day: date,
+    time: time.value,
+    tips: `(${tips.value}:00 - ${tips.value + time.value + 1}:00)`
+  }
+  contDay()
+}
+
+/**
+ * Search in Employees working
+ * @day {Number} number Day
+ * @id {Number} key Employees
+ * @returns {Object} date to String end Key in Days
+ */
+const getId = (day, id) => {
+  const date = parseTime(new Date(nextMonth).setDate(day), '{Y}-{m}-{dd}')
+  const ind = employees.value[id]?.days.findIndex(el => el.day === date)
+  return { date, ind }
+}
+const exportToExcel = () => {
+  excelLoading.value = true
+    const workbook = XLSX.utils.book_new() // создание рабочего листа
+    const worksheetData = []
+  let id = 0
+    for (const item of employees.value) {
+      let line = {'Месяц': item.name}
+      for(let i = 1; i <= month.value.length; i++) {
+        const { ind } = getId(i, id)
+        if(ind !== -1) line[i] = `${item.days[ind].time}  ${item.days[ind].tips}`
+        else line[i] = ' '
+      }
+      const lineAll = Object.assign(line,{
+        'Дней': item.days?.length || ' ',
+        'Часов': item.contHour || 0,
+        'Ознакомлен': ' ... ',
+        'Дата': ' ... '
+      })
+      worksheetData.push(lineAll)
+      id++
+    }
+    const worksheet = XLSX.utils.json_to_sheet(worksheetData, opts)
+    worksheet['!cols'] = this.fitToColumn(worksheetData)
+    XLSX.utils.book_append_sheet(workbook, worksheet, d(nextMonth, 'month'))
+    const filename = 'export_' + parseTime(Date.now(), '{dd}.{m}.{Y}') + '.xlsx'
+    XLSX.writeFile(workbook, filename)
+    excelLoading.value = false
+}
+
+holiday()
+
+</script>
+
+<template>
+  <div>
+    <el-button
+        v-loading="excelLoading"
+        :disabled="excelLoading"
+        plain
+        @click="exportToExcel"
+        style="margin-bottom: .5rem"
+    >
+      {{ $t( 'workSchedule.exportExcel') }}
+    </el-button>
+    <el-skeleton style="width: 100%" :loading="loading" animated>
+      <template #template>
+        <el-skeleton-item variant="text" style="width: 100%;height: 2rem" />
+        <el-skeleton-item variant="text" style="width: 180px;height: 4rem; margin-right: 4px;" /><el-skeleton-item variant="text" style="width: calc( 100% - 184px);height: 4rem" />
+        <el-skeleton-item variant="text" style="width: 180px;height: 8rem; margin-right: 4px;" /><el-skeleton-item variant="text" style="width: calc( 100% - 184px);height: 8rem" />
+      </template>
+      <template #default>
+        <el-table
+          id="printTable"
+          :data="employees"
+          style="width: 100%"
+          size="small"
+          :empty-text="t('workSchedule.emptyText')"
+        >
+          <el-table-column
+            :label="t('workSchedule.title', { name: group } ) + d(nextMonth, 'month') +  ` ${new Date(nextMonth).getFullYear()}`"
+            align="center"
+            height="34"
+          >
+            <el-table-column :label="t('workSchedule.month')" width="180" align="center">
+              <template #default="scope">
+                <el-popover
+                    placement="bottom"
+                    :title="t('workSchedule.autocomplete')"
+                    :width="220"
+                    trigger="click"
+                >
+                  <template #reference>
+                    <div style="height: 100px; width: 100%; display: inline-block">{{ employees[scope.$index].name }}</div>
+                  </template>
+                  <el-radio-group v-model="typeWork" size="small">
+                    <el-radio-button :label="t('workSchedule.Days5')" value="5" />
+                    <el-radio-button label="2 Х 2" value="2x2" />
+                    <el-radio-button label="2 Х 5" value="2x5" />
+                  </el-radio-group><br>
+                  <span>{{ t('workSchedule.fromDate') }}:</span>
+                  <el-slider v-model="date" :step="1" :min="1" :max="month.length"/>
+                  <span>{{ t('workSchedule.duration') }}:</span>
+                  <el-slider v-model="tips" :step="1" :min="8" :max="12"/>
+                  <span>{{ t('workSchedule.with') }}:</span>
+                  <el-slider v-model="time" :step="1" :min="7" :max="11" />
+                  <el-button style="margin-top: .5rem;" size="small" @click="autofill(scope.$index)">{{ t('workSchedule.fillOut') }}</el-button>
+                </el-popover>
+              </template>
+            </el-table-column>
+            <el-table-column :label="t('workSchedule.numbersMonth')" align="center">
+              <el-table-column
+                  v-for="date in month"
+                  :key="date.day"
+                  width="45"
+                  :class-name="date.holidays"
+                  align="center"
+                  :label="date.day.toString()"
+              >
+                <template #default="scope">
+                  <el-popover
+                      placement="bottom"
+                      :title="t('workSchedule.modeSelection')"
+                      :width="200"
+                      trigger="click"
+                      @before-enter="test(date.day, scope.$index)"
+                  >
+                    <template #reference>
+                      <div style="height: 100px; width: 100%; display: inline-block">{{ work(date.day, scope.$index) || ' '}}</div>
+                    </template>
+                    {{ work(date.day, scope.$index)}}<br>
+                    <span>{{ t('workSchedule.with') }}:</span>
+                    <el-slider v-model="tips" :step="1" :min="8" :max="12" @change="changeParam(date.day, scope.$index)"/>
+                    <span>{{ t('workSchedule.duration') }}:</span>
+                    <el-slider v-model="time" :step="1" :min="7" :max="11" @change="changeParam(date.day, scope.$index)"/>
+                    <el-button  style="margin-top: .5rem;" size="small" @click="deleteEmployees(date.day, scope.$index)">{{ t('workSchedule.delete') }}</el-button>
+                  </el-popover>
+                </template>
+              </el-table-column>
+            </el-table-column>
+            <el-table-column  :label="t('workSchedule.onSchedule')" align="center">
+              <el-table-column :label="t('workSchedule.days')" align="center">
+                <template #default="scope">
+                  {{ employees[scope.$index].days.length || 0 }}
+                </template>
+              </el-table-column>
+              <el-table-column :label="`${ t('workSchedule.hours') } ( ${ fortyHours } )`" align="center" >
+                <template #default="scope">
+                  <div :style="`color: ${(fortyHours === scope.row.contHour)? 'green' : 'red'};`">{{ scope.row.contHour }}</div>
+                </template>
+              </el-table-column>
+            </el-table-column>
+          </el-table-column>
+        </el-table>
+      </template>
+    </el-skeleton>
+    <div v-if="checkedDays" class="controls-container">{{ t('workSchedule.chartsFilled') }}:
+      <el-button v-if="!confirm" type="primary" @click="confirm = true">{{ t('workSchedule.confirm') }}</el-button> <span>{{ user.fullname }}</span>
+    </div>
+</template>
