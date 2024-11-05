@@ -1,0 +1,67 @@
+window.addEventListener("DOMContentLoaded", () => {
+	const q = document.querySelector("[name=\"sbpQR\"]");
+	if (q != null) {
+		q.addEventListener("click", (e) => {
+			e.preventDefault();
+			const s = document.querySelector("[name=\"summa_in\"]");
+			const m = document.querySelector("[name=\"email\"]");
+			const tu = document.querySelector("[name=\"module_token_unique\"]");
+			const t = document.querySelector("[name=\"module_token\"]");
+			const ov = document.querySelector(".overlay");
+			if (s.value >= 100) {
+				const data = new FormData();
+				data.append("action", "p8t1qyjg8");
+				data.append("summa_in", s.value);
+				data.append("module_token_unique", tu.value);
+				data.append("module_token", t.value);
+				if (m) {
+					data.email = m.value;
+				}
+				// eslint-disable-next-line no-use-before-define
+				post("/wp-admin/admin-ajax.php", data, answerSBP, ov);
+			}
+		});
+	}
+	const b = document.querySelector("[name=\"spb\"]");
+	if (b != null) {
+		const o = document.querySelector(".overlay");
+		const p = document.querySelector(".other-payment");
+		const buts = o.querySelectorAll("button");
+		buts[0].addEventListener("click", (e) => {
+			e.preventDefault();
+			o.classList.add("close");
+		});
+		buts[1].addEventListener("click", (e) => {
+			e.preventDefault();
+			o.classList.add("close");
+			p.classList.remove("close");
+		});
+		[].forEach.call(p.querySelectorAll("[mattooltip=\"qr\"]"), (i) => {
+			i.addEventListener("click", (e) => {
+				e.preventDefault();
+				o.classList.remove("close");
+				p.classList.add("close");
+			});
+		});
+		b.addEventListener("click", (e) => {
+			e.preventDefault();
+			const s = document.querySelector("[name=\"summa_in\"]");
+			const m = document.querySelector("[name=\"email\"]");
+			const tu = document.querySelector("[name=\"module_token_unique\"]");
+			const t = document.querySelector("[name=\"module_token\"]");
+			const ov = document.querySelector(".overlay");
+			if (s.value >= 100) {
+				const data = new FormData();
+				data.append("action", "p3t2qyjg");
+				data.append("summa_in", s.value);
+				data.append("module_token_unique", tu.value);
+				data.append("module_token", t.value);
+				if (m) {
+					data.email = m.value;
+				}
+				// eslint-disable-next-line no-use-before-define
+				post("/wp-admin/admin-ajax.php", data, answer, ov);
+			}
+		});
+	}
+..........
