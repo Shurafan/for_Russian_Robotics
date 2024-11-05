@@ -1,0 +1,522 @@
+<template>
+  <div class="calendar-app">
+    <div class="calendar-app-sidebar">
+      <div class="calendar-app-sidebar-section">
+        <h1>{{ $t('route.' + $route.meta.title) }}</h1>
+        <h2>{{ type.find(t => t.value === typeCalendar).label }}</h2>
+      </div>
+      <div class="calendar-app-sidebar-section">
+        <h2>{{ $t('calendar.setting') }}</h2>
+        <el-checkbox v-model="calendarOptions.weekends">{{ $t('calendar.weekend') }}</el-checkbox>
+        <p>{{ $t('calendar.typeCalendar') }}</p>
+        <el-select v-model="typeCalendar" placeholder="Select" @change="changeCalendarType">
+          <el-option
+            v-for="item in type"
+            :key="item.value"
+            :label="item.label"
+            :value="item.value"
+          />
+        </el-select>
+        <p v-show="typeCalendar === user.login">{{ $t('calendar.nameCalendar') }}</p>
+        <el-select
+            v-show="typeCalendar === user.login"
+            v-model="groupName" :placeholder="$t('calendar.all')" filterable allow-create @change="getEventsBase">
+          <el-option
+            :label="$t('calendar.all')"
+            :value="false"
+          />
+          <el-option
+            v-for="item in groupNames"
+            :key="item"
+            :label="item"
+            :value="item"
+          />
+        </el-select>
+      </div>
+      <div class="calendar-app-sidebar-section">
+        <h2>{{ $t('calendar.today') }} ({{ currentEvents.length }})</h2>
+        <ul>
+          <li v-for="event in currentEvents" :key="event.id">
+            <small>{{ event.allDayText }}</small>
+            <small>{{ event.startStr }} {{ event.endStr }}</small><br>
+            <i>{{ event.title }}</i>
+          </li>
+        </ul>
+      </div>
+    </div>
+    <div class="calendar-app-main">
+      <FullCalendar
+        ref="calendar"
+        class="calendar-app-calendar"
+        :options="calendarOptions"
+      >
+        <template v-slot:eventContent="arg">
+          <el-popover
+            placement="right-start"
+            :title="arg.event.title"
+            width="320"
+            trigger="hover"
+          >
+            <template #reference>
+              <div style="overflow: hidden;">
+                <i v-if="typeof arg.event.extendedProps.participants !=='undefined' && arg.event.extendedProps.participants.includes(user.fullname)">✓ </i><b>{{ arg.timeText }}</b> <i>{{ arg.event.title }}</i>
+              </div>
+            </template>
+            <template #default>
+              <i v-if="author !== arg.event.extendedProps.author">Автор: {{ arg.event.extendedProps.author }}</i>
+              <div v-if="typeof arg.event.extendedProps.participants !=='undefined'" style="overflow-wrap: break-word;">
+                <i>Участники:</i>
+                <span v-for="(participant, index) in arg.event.extendedProps.participants" :key="index">
+                  {{ participant.split(' ')[0] + ' ' + participant.split(' ')[1][0] + (participant.split(' ')[2] ? '.' + participant.split(' ')[2][0] : '') + '.' + (index !== arg.event.extendedProps.participants.length - 1 ? ', ' : '') }}
+                </span>
+              </div>
+              <div v-html="arg.event.extendedProps.description" />
+            </template>
+
+          </el-popover>
+        </template>
+      </FullCalendar>
+    </div>
+    <el-dialog
+      :title="dialogTitle"
+      v-model="dialogVisible"
+      width="580px"
+    >
+      <el-form ref="dialogForm" :model="dialogForm" autocomplete="on" label-position="top">
+        <el-form-item>
+          <el-col :span="12">
+            <el-select
+              v-model="dialogForm.title"
+              filterable
+              allow-create
+              default-first-option
+              :placeholder="$t('calendar.event')"
+              size="default"
+            >
+              <el-option
+                v-for="item in subjectOptions"
+                :key="item.value"
+                :label="item.label"
+                :value="item.value"
+              />
+            </el-select>
+          </el-col>
+          <el-col :span="12">
+            <el-checkbox v-model="dialogForm.notifications" :disabled="dialogForm.disabled">{{ $t('calendar.notifications') }}</el-checkbox>
+          </el-col>
+        </el-form-item>
+        <el-form-item>
+          <el-col :span="12">
+            <el-color-picker v-model="dialogForm.color" :predefine="predefineColors"  :aria-label="$t('calendar.colorEvent')" /> {{ $t('calendar.colorEvent') }}
+          </el-col>
+          <el-col :span="12">
+            <el-select
+              v-model="dialogForm.participants"
+              :placeholder="$t('calendar.participants')"
+              multiple
+              filterable
+              :filter-method="filterSelect"
+              class="filter-item"
+              size="default"
+            >
+              <el-option-group
+                v-for="group in participantsOptions"
+                :key="group.name"
+                :label="group.description"
+                tabindex="1"
+              >
+                <el-option
+                  v-for="item in group.usersFilter"
+                  :key="item"
+                  :label="item"
+                  :value="item"
+                />
+              </el-option-group>
+
+            </el-select>
+          </el-col>
+        </el-form-item>
+        <el-form-item :aria-label="$t('calendar.descriptionEvent')">
+          <editor v-model=" dialogForm.description" v-if="dialogVisible"/>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="dialogVisible = false" size="default" >{{ $t('calendar.cancel') }}</el-button>
+        <el-button v-if="dialogType === 'create'" size="default" type="primary" @click="handleDialogClick">{{ $t('calendar.save') }}</el-button>
+        <el-button v-if="dialogType === 'edit'" size="default" type="primary" @click="handleEditDialog">{{ $t('calendar.save') }}</el-button>
+        <el-button v-if="dialogType !== 'create'" size="default" type="danger" @click="handleEventDelete">{{ $t('calendar.delete') }}</el-button>
+      </template>
+    </el-dialog>
+  </div>
+</template>
+
+<script>
+
+import FullCalendar from '@fullcalendar/vue3'
+import interactionPlugin from '@fullcalendar/interaction'
+import dayGridPlugin from '@fullcalendar/daygrid'
+import timeGridPlugin from '@fullcalendar/timegrid'
+import listPlugin from '@fullcalendar/list'
+import { parseTime } from '@/utils/index.js'
+import { useUser } from '@/store/user.js'
+import { useApp } from '@/store/app.js'
+import { useCalendar } from '@/store/calendar.js'
+import { useSettings } from '@/store/settings.js'
+import Editor from '@/components/ckeditor5/index.vue'
+
+
+export default {
+  name: 'Calendar',
+  components: {
+    FullCalendar,
+    Editor
+  },
+  data() {
+    return {
+      user: useUser(),
+      app: useApp(),
+      settings: useSettings(),
+      calendar: useCalendar(),
+      dialogVisible: false,
+      dialogTitle: 'Title',
+      dialogType: 'create',
+      dialogForm: {
+        title: '',
+        event: '',
+        description: '',
+        color: '#00a36c',
+        participants: [],
+        notifications: false,
+        disabled: false,
+        subgroup: null
+      },
+      participantsOptions: [],
+      subjectOptions: [
+        {
+          value: 'ВКС',
+          label: 'ВКС'
+        }, {
+          value: 'Собеседование',
+          label: 'Собеседование'
+        }, {
+          value: 'Мастермаинд',
+          label: 'Мастермаинд'
+        }, {
+          value: 'Мозговой штурм',
+          label: 'Мозговой штурм'
+        }, {
+          value: 'Собрание',
+          label: 'Собрание'
+        }, {
+          value: 'Собрание по понтам',
+          label: 'Собрание по понтам'
+        }, {
+          value: 'Планирование',
+          label: 'Планирование'
+        }, {
+          value: 'Согласование',
+          label: 'Согласование'
+        }, {
+          value: 'Уборка',
+          label: 'Уборка'
+        }
+      ],
+      author: '',
+      timeoutID: false,
+      predefineColors: [
+        '#ff4500',
+        '#ff8c00',
+        '#ffd700',
+        '#90ee90',
+        '#00ced1',
+        '#1e90ff',
+        '#c71585',
+        '#00a36c'
+      ],
+      typeCalendar: 'negotiation',
+      groupName: null,
+      groupNames: [],
+      type: [{
+        label: this.$t('calendar.local'),
+        value: 'local'
+      }, {
+        label: this.$t('calendar.negotiation'),
+        value: 'negotiation'
+      }],
+      calendarOptions: {
+        plugins: [
+          dayGridPlugin,
+          timeGridPlugin,
+          interactionPlugin, // needed for dateClick
+          listPlugin
+        ],
+        headerToolbar: {
+          left: 'prev,today,next',
+          center: 'title',
+          right: 'listWeek,timeGridDay,timeGridWeek,dayGridMonth'
+        },
+        buttonText: {
+          today: this.$t('calendar.today'),
+          month: this.$t('calendar.month'),
+          week: this.$t('calendar.week'),
+          day: this.$t('calendar.day'),
+          list: this.$t('calendar.list')
+        },
+        locale: 'ru',
+        initialView: useSettings().calendarView,
+        eventOverlap: false,
+        editable: true,
+        weekNumberCalculation: 'ISO',
+        selectable: true,
+        selectMirror: true,
+        dayMaxEvents: true,
+        weekends: false,
+        select: this.handleDateSelect,
+        eventClick: this.handleEventClick,
+        eventsSet: this.handleEvents,
+        eventChange: this.handleChange,
+        datesSet: this.handleDatesSet,
+        allDayText: this.$t('calendar.allDay'),
+        events: []
+        /* you can update a remote database when these fire: !!! Настя не удаляй !!!
+        initialEvents: // alternatively, use the `events` setting to fetch from a feed
+        eventAdd:
+        eventRemove:
+        */
+      },
+      currentEvents: []
+    }
+  },
+  watch: {
+    'app.language'(newLang) { // select language
+      this.calendarOptions.locale = newLang
+      this.calendarOptions.weekNumberCalculation = this.weekNumber()
+      this.calendarOptions.buttonText.today = this.$t('calendar.today')
+      this.calendarOptions.buttonText.month = this.$t('calendar.month')
+      this.calendarOptions.buttonText.week = this.$t('calendar.week')
+      this.calendarOptions.buttonText.day = this.$t('calendar.day')
+      this.calendarOptions.buttonText.list = this.$t('calendar.list')
+      this.calendarOptions.allDayText = this.$t('calendar.allDay')
+      this.type[0].label = this.$t('calendar.local')
+      this.type[1].label = this.$t('calendar.negotiation')
+    },
+    'dialogForm.participants.length'(newLength, oldLength) {
+      //console.log(newLength + ' ' + oldLength)
+      if (oldLength < newLength && this.dialogType === 'create') {
+        this.dialogForm.notifications = true
+        this.dialogForm.disabled = false
+      }
+      if (newLength === 0) {
+        this.dialogForm.notifications = false
+        this.dialogForm.disabled = true
+      }
+    }
+  },
+
+  mounted() {
+    this.author = this.user.surname + ' ' + this.user.name
+    this.calendarOptions.locale = this.app.language
+    this.calendarOptions.weekNumberCalculation = this.weekNumber()
+    this.type[0].value = this.user.login
+    this.getEventsBase()
+    this.timeoutID = setInterval(this.getEventsBase, 120000)
+    this.getAgents()
+    this.getGroupNames()
+    // this.handleThemes(this.settings.theme)
+  },
+  beforeDestroy() {
+    clearInterval(this.timeoutID)
+  },
+  methods: {
+    weekNumber() {
+      if (this.app.language === 'en' || this.app.language === 'zh' || this.app.language === 'ja') return 0
+      else return 'ISO'
+    },
+    async getEventsBase() {
+      await this.calendar.getCalendarData( { type: this.typeCalendar, subgroup: this.groupName }).then((result) => {
+        this.calendarOptions.events = result.map(ev => this.colorEvent(ev))
+      })
+    },
+    handleDateSelect(selectInfo) { // Создание мероприятия
+      const testDate = (selectInfo.allDay) ? ': ' + this.$t('calendar.allDay') : ': ' + this.$t('calendar.in') + ' ' + parseTime(selectInfo.start, '{G}:{i}:{s}')
+      this.dialogTitle = this.$t('calendar.creteTitle') + testDate
+      this.dialogVisible = true
+      this.dialogType = 'create'
+      this.dialogForm.color = '#00a36c' // rest
+      this.dialogForm.title = ''
+      this.dialogForm.description = ''
+      this.dialogForm.participants = [this.user.fullname]
+      this.dialogForm.notifications = false
+      this.dialogForm.subgroup = this.groupName
+      selectInfo.view.calendar.unselect() // clear date selection
+      this.dialogForm.event = selectInfo
+      // console.log(selectInfo)
+    },
+    handleEventClick(clickInfo) {
+      //console.log(clickInfo.event.end)
+        if (clickInfo.event.extendedProps.author === this.author || this.user.roles.some((rol) => rol === 'Group-IT')) { // Редактирование события
+        const testDate = (clickInfo.event.allDay) ? ': ' + this.$t('calendar.allDay') : ': ' + this.$t('calendar.from') + ' ' + parseTime(clickInfo.event.start, '{G}:{i}:{s}') + ' ' + this.$t('calendar.to') + ' ' + parseTime((clickInfo.event.end === null)? clickInfo.event.start.setHours(clickInfo.event.start.getHours() + 1) : clickInfo.event.end, '{G}:{i}:{s}')
+        this.dialogTitle = this.$t('calendar.editTitle') + testDate
+        this.dialogVisible = true
+        this.dialogType = 'edit'
+        this.dialogForm.event = clickInfo
+        this.dialogForm.title = clickInfo.event.title
+        this.dialogForm.participants = clickInfo.event.extendedProps.participants
+        this.dialogForm.description = clickInfo.event.extendedProps.description
+        this.dialogForm.notifications = clickInfo.event.extendedProps.notifications
+        this.dialogForm.subgroup = clickInfo.event.extendedProps.subgroup
+        this.dialogForm.color = clickInfo.event.backgroundColor
+      } else {
+        //console.log('popover')
+      }
+    },
+    handleDialogClick() { // кнопка создать
+      if (this.dialogForm.title.length > 0) {
+        const start = this.splitDateTime(this.dialogForm.event.startStr)
+        const end = this.splitDateTime(this.dialogForm.event.endStr)
+        const data = {
+          title: this.dialogForm.title,
+          start_date: start.date,
+          start_time: start.time,
+          end_date: end.date,
+          end_time: end.time,
+          color: this.dialogForm.color,
+          participants: this.dialogForm.participants,
+          author: this.author,
+          description: this.dialogForm.description,
+          type: this.typeCalendar,
+          subgroup: this.dialogForm.subgroup,
+          notifications: this.dialogForm.notifications
+        }
+        this.calendar.saveCalendarEvent(data).then((result) => {
+          data.id = result
+          this.getEventsBase()
+          this.dialogVisible = false
+          this.getGroupNames()
+        })
+      }
+    },
+    handleEditDialog() { // кнопка сохранить
+      if (this.dialogForm.title.length > 0) {
+        const start = this.splitDateTime(this.dialogForm.event.event.startStr) 
+        const end = this.splitDateTime(this.dialogForm.event.event.endStr) 
+        const data = {
+          title: this.dialogForm.title,
+          start_date: start.date,
+          start_time: start.time,
+          end_date: end.date,
+          end_time: end.time,
+          id: this.dialogForm.event.event.id,
+          participants: this.dialogForm.participants,
+          color: this.dialogForm.color,
+          author: this.author,
+          description: this.dialogForm.description,
+          type: this.typeCalendar,
+          subgroup: this.dialogForm.subgroup,
+          notifications: this.dialogForm.notifications
+        }
+        this.calendar.saveCalendarEvent(data).then((result) => {
+          //console.log(result)
+          this.getEventsBase()
+          this.dialogVisible = false
+          this.getGroupNames()
+        })
+      }
+    },
+    handleChange(clickInfo) { // Перетаскивание
+      if (clickInfo.event.extendedProps.author === this.author || this.user.roles.some((rol) => rol === 'Group-IT')) {
+        //console.log(clickInfo.event.endStr)
+        const start = this.splitDateTime(clickInfo.event.startStr) // ????
+        const end = this.splitDateTime(clickInfo.event.endStr) // ???
+        const data = {
+          id: clickInfo.event.id,
+          start_date: start.date,
+          start_time: start.time,
+          end_date: end.date,
+          end_time: end.time,
+          title: clickInfo.event.title,
+          author: this.author,
+          color: clickInfo.event.backgroundColor,
+          description: clickInfo.event.extendedProps.description,
+          participants: clickInfo.event.extendedProps.participants,
+          type: this.typeCalendar,
+          subgroup: this.dialogForm.subgroup,
+          notifications: clickInfo.event.extendedProps.notifications
+        }
+        this.calendar.saveCalendarEvent(data).then((result) => {
+          //console.log(result)
+          this.getEventsBase()
+        })
+      } else this.getEventsBase()
+    },
+    handleEventDelete() {
+      this.calendar.deleteCalendarEvent({ id: this.dialogForm.event.event.id })
+      this.dialogForm.event.event.remove()
+      this.dialogVisible = false
+    },
+    colorEvent(event) {
+      const today = new Date()
+      const start = new Date(event.start)
+      // //console.log('color')
+      let end = (typeof event.end === 'undefined') ? new Date(event.start).setMinutes(new Date(event.start).getMinutes() + 60) : new Date(event.end)
+      if (event.allDay) end = new Date(end).setHours(23, 59, 59)
+      if (today <= end && today >= start) {
+        event.color = 'var(--el-color-warning)'
+        event.textColor = 'var(--el-color-danger)'
+      } else if (today > end) {
+        event.color = 'var(--el-color-info-light-3)'
+        event.textColor = 'var(--el-text-color-regular)'
+      }
+      // console.log(event)
+      return event
+    },
+    handleEvents(events) {
+      this.currentEvents = events
+        .filter((ev) => new Date(ev.end) >= new Date() || (new Date(ev.start) >= new Date()
+          .setHours(0, 0, -1) && ev.allDay) || (new Date(ev.start) >= new Date().setMinutes(new Date().getMinutes() - 60) && !ev.allDay))
+        .filter((ev) => new Date(ev.start) <= new Date().setHours(23, 59, 59))
+    },
+    getGroupNames() {
+      this.calendar.getCalendarGroupName({ type: this.user.login }).then(res => {
+        this.groupNames = res
+      })
+    },
+    changeCalendarType() {
+      this.groupName = null
+      this.getEventsBase()
+    },
+    async getAgents() {
+      await this.calendar.getGroups().then((result) => {
+        //console.log(result)
+        this.participantsOptions = result
+
+        //console.log(result)
+      })
+    },
+    handleDatesSet(e) {
+      if (this.settings.calendarView !== e.view.type) {
+        this.settings.calendarView = e.view.type
+        this.settings.setUserData(this.user.login)
+      }
+    },
+    splitDateTime(inputDateString) {
+      // "2024-07-26T19:30:00+03:00" или "2024-08-01" или ""
+      if(inputDateString === "") return { date: null, time: null }
+      else if (inputDateString.includes('T')) {
+        const indexT = inputDateString.indexOf('T')
+        const dateStr = inputDateString.slice(0, indexT)
+        const timeStr = inputDateString.slice(indexT + 1,inputDateString.indexOf('+'))
+        return { date: dateStr, time: timeStr }
+      } else return { date: inputDateString, time: null}
+    },
+    filterSelect(input){
+      // console.log(input)
+      this.participantsOptions.forEach(item => {
+        item.usersFilter = item.users.filter(user => {
+          return (input.length == 0 || new RegExp(input.toLowerCase()).test(user.toLowerCase()))
+        })
+      })
+    }
+  }
+}
+</script>
